@@ -1,1 +1,0 @@
-import{a as s}from"./gg6blpVb.js";import{m as o,R as t,i as n,H as c,ac as l,$ as p}from"./DC5-RHVq.js";const f=o({__name:"CardFooter",props:{class:{type:[Boolean,null,String,Object,Array]}},setup(e){const a=e;return(r,m)=>(t(),n("div",{"data-slot":"card-footer",class:c(l(s)("flex items-center px-6 [.border-t]:pt-6",a.class))},[p(r.$slots,"default")],2))}});export{f as _};

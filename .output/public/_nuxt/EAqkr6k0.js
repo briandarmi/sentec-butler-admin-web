@@ -1,1 +1,0 @@
-import{a as t}from"./gg6blpVb.js";import{m as n,R as o,i as r,H as c,ac as l,$ as p}from"./DC5-RHVq.js";const f=n({__name:"CardContent",props:{class:{type:[Boolean,null,String,Object,Array]}},setup(a){const s=a;return(e,m)=>(o(),r("div",{"data-slot":"card-content",class:c(l(t)("px-6",s.class))},[p(e.$slots,"default")],2))}});export{f as _};
