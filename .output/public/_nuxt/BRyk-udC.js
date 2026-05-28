@@ -1,0 +1,1 @@
+import{a as o}from"./gg6blpVb.js";import{m as t,R as n,i as r,H as l,ac as c,$ as i}from"./DC5-RHVq.js";const f=t({__name:"CardTitle",props:{class:{type:[Boolean,null,String,Object,Array]}},setup(a){const e=a;return(s,m)=>(n(),r("h3",{"data-slot":"card-title",class:l(c(o)("leading-none font-semibold",e.class))},[i(s.$slots,"default")],2))}});export{f as _};

@@ -1,0 +1,1 @@
+import{ad as a,af as s,u,x as r,w as d}from"./DC5-RHVq.js";function o(t){const e=t||s();return e.ssrContext?.head||e.runWithContext(()=>{if(u()){const n=r(d);if(!n)throw new Error("[nuxt] [unhead] Missing Unhead instance.");return n}})}function i(t,e={}){const n=e.head||o(e.nuxt);return a(t,{head:n,...e})}export{i as u};
