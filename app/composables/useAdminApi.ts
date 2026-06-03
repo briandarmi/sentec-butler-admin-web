@@ -128,8 +128,18 @@ const DEFAULT_HOTEL_ID = '1'
 
 async function apiRequest<T>(path: string, options?: Parameters<typeof $fetch<T>>[1]) {
   const config = useRuntimeConfig()
-  const baseURL = config.public.apiBaseUrl as string
 
+  if (config.public.useFakeApiClient) {
+    const { handleFakeApiRequest } = await import('~/utils/clientFakeApi')
+    return handleFakeApiRequest(path, {
+      method: options?.method as string | undefined,
+      body: options?.body,
+      headers: options?.headers as Record<string, string> | undefined,
+      query: options?.query as Record<string, unknown> | undefined,
+    }) as T
+  }
+
+  const baseURL = config.public.apiBaseUrl as string
   return $fetch<T>(path, {
     baseURL,
     ...options,
