@@ -1,13 +1,89 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useAdminApi } from '~/composables/useAdminApi'
 
-const syncItems = [
-  { label: 'Guest Profiles', count: '1,240', status: 'Synced' },
-  { label: 'Room Inventory', count: '250', status: 'Synced' },
-  { label: 'Reservations', count: '48', status: 'Syncing...' },
-]
+const adminApi = useAdminApi()
 
-const pmsProvider = ref('Opera Cloud')
+const applications = ref<Awaited<ReturnType<typeof adminApi.listApplications>>>([])
+const hotelSyncs = ref<Awaited<ReturnType<typeof adminApi.listHotelSyncs>>>([])
+
+const pmsProvider = ref('')
+const useAsymetric = ref(false)
+const privateKey = ref('')
+const isLoading = ref(false)
+const isSaving = ref(false)
+const currentSyncId = ref<string | undefined>(undefined)
+
+const providerOptions = computed(() => applications.value.map((app) => ({ label: app.name, value: app.id })))
+
+const syncItems = computed(() => {
+  const total = hotelSyncs.value.length
+  const connected = hotelSyncs.value.filter((item) => !item.useAsymetric).length
+  const secure = hotelSyncs.value.filter((item) => item.useAsymetric).length
+
+  return [
+    { label: 'Applications Linked', count: String(total), status: 'Synced' },
+    { label: 'Symmetric Mode', count: String(connected), status: 'Synced' },
+    { label: 'Asymmetric Mode', count: String(secure), status: secure > 0 ? 'Syncing...' : 'Synced' },
+  ]
+})
+
+function hydrateFromSync(applicationId: string) {
+  const found = hotelSyncs.value.find((sync) => sync.applicationId === applicationId)
+  currentSyncId.value = found?.id
+  useAsymetric.value = found?.useAsymetric ?? false
+  privateKey.value = found?.privateKey ?? ''
+}
+
+async function loadPmsSync() {
+  isLoading.value = true
+  try {
+    const [appRows, syncRows] = await Promise.all([adminApi.listApplications(), adminApi.listHotelSyncs()])
+    applications.value = appRows
+    hotelSyncs.value = syncRows
+
+    const firstApp = appRows[0]
+    if (!pmsProvider.value && firstApp) {
+      pmsProvider.value = firstApp.id
+    }
+
+    if (pmsProvider.value) {
+      hydrateFromSync(pmsProvider.value)
+    }
+  }
+  finally {
+    isLoading.value = false
+  }
+}
+
+async function savePmsSync() {
+  if (!pmsProvider.value || isSaving.value) {
+    return
+  }
+
+  isSaving.value = true
+  try {
+    await adminApi.upsertHotelSync({
+      id: currentSyncId.value,
+      applicationId: pmsProvider.value,
+      useAsymetric: useAsymetric.value,
+      privateKey: useAsymetric.value ? privateKey.value : '',
+    })
+
+    await loadPmsSync()
+  }
+  finally {
+    isSaving.value = false
+  }
+}
+
+watch(pmsProvider, (value) => {
+  if (value) {
+    hydrateFromSync(value)
+  }
+})
+
+onMounted(loadPmsSync)
 </script>
 
 <template>
@@ -25,10 +101,7 @@ const pmsProvider = ref('Opera Cloud')
                   <SelectValue placeholder="Select provider" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Opera Cloud">Opera Cloud</SelectItem>
-                  <SelectItem value="Mews">Mews</SelectItem>
-                  <SelectItem value="Cloudbeds">Cloudbeds</SelectItem>
-                  <SelectItem value="Custom API">Custom API</SelectItem>
+                  <SelectItem v-for="provider in providerOptions" :key="provider.value" :value="provider.value">{{ provider.label }}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -37,27 +110,34 @@ const pmsProvider = ref('Opera Cloud')
             <Label>Hotel ID</Label>
             <Input
               type="text"
-              placeholder="e.g. GS-LON-01"
+              :model-value="adminApi.hotelId.value"
+              disabled
             />
           </div>
           <div class="space-y-2">
-            <Label>API Key</Label>
+            <Label>Private Key</Label>
             <Input
               type="password"
-              value="••••••••••••••••"
+              v-model="privateKey"
             />
+          </div>
+          <div class="md:col-span-2 flex items-center justify-between rounded-xl border border-[#E5E5E7] bg-[#F5F5F7] p-3">
+            <p class="text-sm">Use Asymmetric Key Mode</p>
+            <Switch v-model:checked="useAsymetric" />
           </div>
           </div>
         </CardContent>
 
         <CardFooter class="flex flex-col items-center justify-between gap-4 border-t border-[#E5E5E7] sm:flex-row">
           <div class="flex items-center gap-2">
-            <div class="h-2 w-2 rounded-full bg-success" />
-            <span class="text-sm font-bold text-success">Connected & Synced</span>
+            <div class="h-2 w-2 rounded-full" :class="hotelSyncs.length ? 'bg-success' : 'bg-[#86868B]'" />
+            <span class="text-sm font-bold" :class="hotelSyncs.length ? 'text-success' : 'text-[#86868B]'">
+              {{ hotelSyncs.length ? 'Connected & Synced' : 'No Active Sync' }}
+            </span>
           </div>
           <div class="w-full sm:w-auto">
-            <Button size="sm">
-              Test Connection
+            <Button size="sm" :disabled="isLoading || isSaving" @click="savePmsSync">
+              {{ isLoading ? 'Loading...' : isSaving ? 'Saving...' : 'Save Connection' }}
             </Button>
           </div>
         </CardFooter>
