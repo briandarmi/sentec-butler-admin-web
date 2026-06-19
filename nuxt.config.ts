@@ -4,12 +4,6 @@ export default defineNuxtConfig({
   ssr: false,
   css: ['~/assets/css/tailwind.css'],
   compatibilityDate: '2025-01-01',
-  runtimeConfig: {
-    public: {
-      apiBaseUrl: '/api',
-      useFakeApiClient: true,
-    },
-  },
   vite: {
     plugins: [tailwindcss()],
   },

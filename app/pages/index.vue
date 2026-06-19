@@ -1,240 +1,276 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   BellIcon,
   Building2Icon,
-  DatabaseIcon,
   GlobeIcon,
-  PaletteIcon,
+  HotelIcon,
+  MailIcon,
+  MapPinIcon,
+  MapPinnedIcon,
+  NetworkIcon,
   RefreshCwIcon,
+  TimerIcon,
   UtensilsCrossedIcon,
-  UsersIcon,
-  WifiIcon,
 } from '@lucide/vue'
-import { useAdminApi } from '~/composables/useAdminApi'
+import {
+  useAdminApi,
+  type Category,
+  type CategoryItem,
+  type Hotel,
+  type HotelDepartment,
+  type Organization,
+  type RoomService,
+  type Sla,
+} from '~/composables/useAdminApi'
+import { useAuthz } from '~/composables/useAuthz'
+import { useAuth } from '~/composables/useAuth'
 
 const adminApi = useAdminApi()
+const { isSuperAdmin } = useAuthz()
+const auth = useAuth()
 
-const hotels = ref<Awaited<ReturnType<typeof adminApi.listSuperadminHotels>>>([])
-const masterSetups = ref<Awaited<ReturnType<typeof adminApi.listMasterSetups>>>([])
-const hotelSetups = ref<Awaited<ReturnType<typeof adminApi.listHotelSetups>>>([])
-const services = ref<Awaited<ReturnType<typeof adminApi.listRoomServices>>>([])
-const outlets = ref<Awaited<ReturnType<typeof adminApi.listCategoryItems>>>([])
-const syncs = ref<Awaited<ReturnType<typeof adminApi.listHotelSyncs>>>([])
-const applications = ref<Awaited<ReturnType<typeof adminApi.listApplications>>>([])
+const hotel = ref<Hotel | null>(null)
+const categories = ref<Category[]>([])
+const items = ref<CategoryItem[]>([])
+const services = ref<RoomService[]>([])
+const slas = ref<Sla[]>([])
+const hotelDepts = ref<HotelDepartment[]>([])
+const hotels = ref<Hotel[]>([])
+const orgs = ref<Organization[]>([])
 
 const isLoading = ref(false)
+const errorMessage = ref('')
 
-const selectedHotel = computed(() => hotels.value.find((hotel) => hotel.id === adminApi.hotelId.value))
+const activeServiceCount = computed(() => services.value.filter(s => s.isActive).length)
+const activeDeptCount = computed(() => hotelDepts.value.filter(d => d.isActive && !d.isRemoved).length)
+const mappedItems = computed(() => items.value.filter(i => i.requestMapping))
+const mappedCount = computed(() => mappedItems.value.length)
+const unmappedCount = computed(() => items.value.length - mappedCount.value)
+const coveragePercent = computed(() =>
+  items.value.length === 0 ? 0 : Math.round((mappedCount.value / items.value.length) * 100),
+)
 
-const setupIdByCode = computed(() => Object.fromEntries(masterSetups.value.map((item) => [item.setupCode, item.id])))
-const setupValueByCode = computed(() => {
-  const result: Record<string, string> = {}
-  for (const [code, setupId] of Object.entries(setupIdByCode.value)) {
-    const found = hotelSetups.value.find((item) => item.setupId === setupId)
-    if (found?.value) {
-      result[code] = found.value
-    }
-  }
-
-  return result
-})
-
-const requiredSetupCodes = ['HOTEL_NAME', 'HOTEL_LOGO_URL', 'PRIMARY_COLOR', 'SECONDARY_COLOR', 'FONT_FAMILY', 'WIFI_SSID', 'WIFI_PASSWORD']
-const configCompletionPercent = computed(() => {
-  const filled = requiredSetupCodes.filter((code) => Boolean(setupValueByCode.value[code])).length
-  return Math.round((filled / requiredSetupCodes.length) * 100)
-})
+const hotelInitial = computed(() => (hotel.value?.name ?? 'Hotel').slice(0, 1).toUpperCase())
+const accountName = computed(() => auth.displayName.value || auth.username.value || 'there')
 
 const stats = computed(() => [
-  { label: 'Active Hotels', value: String(hotels.value.filter((hotel) => hotel.isActive).length) },
-  { label: 'Services Enabled', value: String(services.value.filter((service) => service.isActive).length) },
-  { label: 'Outlets Active', value: String(outlets.value.filter((outlet) => outlet.isActive).length) },
-  { label: 'PMS Links', value: String(syncs.value.length) },
+  { label: 'Category Items', value: items.value.length, icon: UtensilsCrossedIcon },
+  { label: 'Room Services', value: activeServiceCount.value, icon: BellIcon },
+  { label: 'SLAs', value: slas.value.length, icon: TimerIcon },
+  { label: 'Active Departments', value: activeDeptCount.value, icon: Building2Icon },
 ])
 
-const modules = computed(() => {
-  const hasBranding = configCompletionPercent.value >= 60
-  const hasWifi = Boolean(setupValueByCode.value.WIFI_SSID) && Boolean(setupValueByCode.value.WIFI_PASSWORD)
-  const hasPms = syncs.value.length > 0
-  const hasServices = services.value.length > 0
-  const hasOutlets = outlets.value.length > 0
-
-  return [
-    { id: 'branding', label: 'Branding', icon: PaletteIcon, description: 'Logo, colors, typography', ready: hasBranding },
-    { id: 'wifi', label: 'WiFi', icon: WifiIcon, description: 'Guest SSID and password', ready: hasWifi },
-    { id: 'pms', label: 'PMS Connection', icon: DatabaseIcon, description: `${syncs.value.length} linked application(s)`, ready: hasPms },
-    { id: 'services', label: 'Services', icon: BellIcon, description: `${services.value.length} service item(s)`, ready: hasServices },
-    { id: 'outlets', label: 'Outlets', icon: UtensilsCrossedIcon, description: `${outlets.value.length} outlet item(s)`, ready: hasOutlets },
-    { id: 'routing', label: 'Staff Routing', icon: UsersIcon, description: 'Request mapping and SLA', ready: true },
-  ]
-})
-
-const syncRows = computed(() => {
-  return applications.value.map((application) => {
-    const found = syncs.value.find((item) => item.applicationId === application.id)
-    const mode = found ? (found.useAsymetric ? 'Asymmetric' : 'Symmetric') : 'Not Connected'
-    const status = found ? 'Synced' : 'Not Connected'
-
-    return {
-      label: application.name,
-      mode,
-      status,
-    }
-  })
-})
-
-async function loadDashboard() {
+async function load() {
+  if (isLoading.value) return
   isLoading.value = true
+  errorMessage.value = ''
   try {
-    const [hotelRows, masterSetupRows, hotelSetupRows, serviceRows, outletRows, syncRowsData, applicationRows] = await Promise.all([
-      adminApi.listSuperadminHotels(),
-      adminApi.listMasterSetups(),
-      adminApi.listHotelSetups(),
-      adminApi.listRoomServices(),
-      adminApi.listCategoryItems(),
-      adminApi.listHotelSyncs(),
-      adminApi.listApplications(),
-    ])
+    try {
+      hotel.value = await adminApi.getCurrentHotel()
+    }
+    catch {
+      hotel.value = null
+    }
 
-    hotels.value = hotelRows
-    masterSetups.value = masterSetupRows
-    hotelSetups.value = hotelSetupRows
-    services.value = serviceRows
-    outlets.value = outletRows
-    syncs.value = syncRowsData
-    applications.value = applicationRows
+    const [cats, catItems, roomServices, slaList, depts] = await Promise.all([
+      adminApi.listCategories(),
+      adminApi.listCategoryItems(),
+      adminApi.listRoomServices(),
+      adminApi.listSlas(),
+      adminApi.listHotelDepartments(),
+    ])
+    categories.value = cats
+    items.value = catItems
+    services.value = roomServices
+    slas.value = slaList
+    hotelDepts.value = depts
+
+    if (isSuperAdmin.value) {
+      const [hotelList, orgList] = await Promise.all([
+        adminApi.listHotels(),
+        adminApi.listOrganizations(),
+      ])
+      hotels.value = hotelList
+      orgs.value = orgList
+    }
+  }
+  catch (e) {
+    errorMessage.value = String((e as Error).message)
   }
   finally {
     isLoading.value = false
   }
 }
 
-watch(() => adminApi.hotelId.value, loadDashboard)
-onMounted(loadDashboard)
+onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-10">
-    <div class="flex items-center gap-4">
-      <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#027BFF] text-white shadow-md">
-        <Building2Icon />
+  <div class="space-y-8">
+    <Alert v-if="errorMessage" variant="destructive">
+      <AlertTitle>Something went wrong</AlertTitle>
+      <AlertDescription>{{ errorMessage }}</AlertDescription>
+    </Alert>
+
+    <!-- Hero row -->
+    <div class="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+      <div class="flex items-center gap-4">
+        <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-[#027BFF] text-white shadow-sm">
+          <Building2Icon class="h-7 w-7" />
+        </div>
+        <div>
+          <h2 class="text-2xl font-bold tracking-tight text-[#1D1D1F]">
+            {{ hotel?.name ?? 'Your Hotel' }}
+          </h2>
+          <p class="text-sm font-medium text-[#86868B]">
+            Welcome back, {{ accountName }} — here's your hotel at a glance.
+          </p>
+        </div>
       </div>
-      <div>
-        <h2 class="text-2xl font-bold tracking-tight">{{ selectedHotel?.name ?? 'Hotel Dashboard' }}</h2>
-        <p class="text-sm text-[#86868B]">Live operational view across your currently available admin modules</p>
+
+      <div class="flex items-center gap-3">
+        <p v-if="isLoading" class="text-xs text-[#86868B]">Loading...</p>
+        <Button size="sm" variant="outline" :disabled="isLoading" @click="load">
+          <RefreshCwIcon class="h-4 w-4" :class="isLoading ? 'animate-spin' : ''" />
+          Refresh
+        </Button>
       </div>
     </div>
 
+    <!-- Stat cards -->
     <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
-      <Card v-for="stat in stats" :key="stat.label" class="gap-4">
-        <CardHeader class="gap-0 pb-0">
-          <CardDescription class="text-[10px] font-bold uppercase tracking-widest text-[#86868B]">{{ stat.label }}</CardDescription>
-        </CardHeader>
-        <CardContent class="mt-auto">
-          <CardTitle class="text-3xl tracking-tight">{{ stat.value }}</CardTitle>
+      <Card v-for="stat in stats" :key="stat.label" class="rounded-xl border-[#E5E5E7]">
+        <CardContent class="flex flex-col gap-3">
+          <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-[#F5F5F7] text-[#027BFF]">
+            <component :is="stat.icon" class="h-4 w-4" />
+          </div>
+          <div>
+            <p class="text-3xl font-bold tracking-tight text-[#1D1D1F]">{{ stat.value }}</p>
+            <p class="text-xs font-semibold uppercase tracking-widest text-[#86868B]">{{ stat.label }}</p>
+          </div>
         </CardContent>
       </Card>
     </div>
 
-    <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-      <Card class="lg:col-span-2">
+    <!-- Hotel Profile + Routing coverage -->
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <Card class="rounded-xl border-[#E5E5E7]">
         <CardHeader>
           <CardTitle class="text-base">Hotel Profile</CardTitle>
-          <CardDescription>Current selected hotel context used by all admin pages</CardDescription>
+          <CardDescription>Core identity and branding for the active hotel.</CardDescription>
         </CardHeader>
-        <CardContent class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div class="rounded-xl border border-[#E5E5E7] bg-white p-4">
-            <p class="text-[10px] font-bold uppercase tracking-widest text-[#86868B]">Hotel Name</p>
-            <p class="mt-2 text-sm font-semibold">{{ selectedHotel?.name ?? '-' }}</p>
+        <CardContent class="space-y-4">
+          <div class="space-y-3 text-sm">
+            <div class="flex items-center gap-3">
+              <HotelIcon class="h-4 w-4 shrink-0 text-[#86868B]" />
+              <span class="font-medium text-[#1D1D1F]">{{ hotel?.name ?? '—' }}</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <MailIcon class="h-4 w-4 shrink-0 text-[#86868B]" />
+              <span class="text-[#4A4A4F]">{{ hotel?.email ?? '—' }}</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <MapPinIcon class="h-4 w-4 shrink-0 text-[#86868B]" />
+              <span class="text-[#4A4A4F]">{{ hotel?.address ?? '—' }}</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <GlobeIcon class="h-4 w-4 shrink-0 text-[#86868B]" />
+              <span class="text-[#4A4A4F]">{{ hotel?.website ?? '—' }}</span>
+            </div>
           </div>
-          <div class="rounded-xl border border-[#E5E5E7] bg-white p-4">
-            <p class="text-[10px] font-bold uppercase tracking-widest text-[#86868B]">Contact Email</p>
-            <p class="mt-2 text-sm font-semibold">{{ selectedHotel?.email ?? '-' }}</p>
-          </div>
-          <div class="rounded-xl border border-[#E5E5E7] bg-white p-4">
-            <p class="text-[10px] font-bold uppercase tracking-widest text-[#86868B]">Address</p>
-            <p class="mt-2 text-sm font-semibold">{{ selectedHotel?.address ?? '-' }}</p>
-          </div>
-          <div class="rounded-xl border border-[#E5E5E7] bg-white p-4">
-            <p class="text-[10px] font-bold uppercase tracking-widest text-[#86868B]">Website</p>
-            <p class="mt-2 text-sm font-semibold">{{ selectedHotel?.website ?? '-' }}</p>
+
+          <Separator />
+
+          <div>
+            <p class="mb-2 text-xs font-semibold uppercase tracking-widest text-[#86868B]">Brand Colors</p>
+            <div class="flex items-center gap-4">
+              <div class="flex items-center gap-2">
+                <span
+                  class="h-9 w-9 rounded-lg border border-[#E5E5E7] shadow-sm"
+                  :style="{ backgroundColor: hotel?.primaryColor ?? '#F5F5F7' }"
+                />
+                <span class="text-xs font-medium text-[#86868B]">{{ hotel?.primaryColor ?? 'Primary' }}</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span
+                  class="h-9 w-9 rounded-lg border border-[#E5E5E7] shadow-sm"
+                  :style="{ backgroundColor: hotel?.secondaryColor ?? '#F5F5F7' }"
+                />
+                <span class="text-xs font-medium text-[#86868B]">{{ hotel?.secondaryColor ?? 'Secondary' }}</span>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
+      <Card class="rounded-xl border-[#E5E5E7]">
         <CardHeader>
-          <CardTitle class="text-base">Setup Coverage</CardTitle>
-          <CardDescription>Branding and connectivity readiness</CardDescription>
+          <CardTitle class="text-base">Routing Coverage</CardTitle>
+          <CardDescription>How many category items are mapped to a department &amp; SLA.</CardDescription>
         </CardHeader>
-        <CardContent class="space-y-4">
+        <CardContent class="space-y-5">
           <div class="flex items-end justify-between">
-            <p class="text-3xl font-bold tracking-tight">{{ configCompletionPercent }}%</p>
-            <Badge :variant="configCompletionPercent >= 80 ? 'success' : 'secondary'">
-              {{ configCompletionPercent >= 80 ? 'Healthy' : 'Needs Attention' }}
-            </Badge>
+            <div>
+              <p class="text-3xl font-bold tracking-tight text-[#1D1D1F]">{{ coveragePercent }}%</p>
+              <p class="text-xs font-semibold uppercase tracking-widest text-[#86868B]">Mapped</p>
+            </div>
+            <div class="flex items-center gap-2 text-[#86868B]">
+              <MapPinnedIcon class="h-5 w-5" />
+            </div>
           </div>
-          <Progress :model-value="configCompletionPercent" />
-          <p class="text-xs text-[#86868B]">Based on branding, WiFi, and font setup codes currently configured.</p>
+
+          <Progress :model-value="coveragePercent" />
+
+          <div class="grid grid-cols-2 gap-4">
+            <div class="rounded-lg bg-[#F5F5F7] p-3">
+              <p class="text-xl font-bold text-[#1D1D1F]">{{ mappedCount }}</p>
+              <div class="mt-1 flex items-center gap-2">
+                <Badge variant="success">Mapped</Badge>
+              </div>
+            </div>
+            <div class="rounded-lg bg-[#F5F5F7] p-3">
+              <p class="text-xl font-bold text-[#1D1D1F]">{{ unmappedCount }}</p>
+              <div class="mt-1 flex items-center gap-2">
+                <Badge variant="secondary">Unmapped</Badge>
+              </div>
+            </div>
+          </div>
+
+          <p class="text-xs text-[#86868B]">
+            {{ mappedCount }} of {{ items.length }} items have a routing mapping.
+          </p>
         </CardContent>
       </Card>
     </div>
 
-    <div>
-      <h3 class="mb-4 text-sm font-bold uppercase tracking-widest text-[#86868B]">Available Features</h3>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <Card
-          v-for="module in modules"
-          :key="module.id"
-          class="transition-shadow hover:shadow-md"
-        >
-          <CardContent>
-            <NuxtLink
-              :to="`/${module.id}`"
-              class="group flex items-center gap-4"
-            >
-              <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#F5F5F7] transition-colors group-hover:bg-[#027BFF]/10">
-                <component :is="module.icon" class="text-[#86868B] transition-colors group-hover:text-[#027BFF]" />
-              </div>
-              <div>
-                <p class="text-sm font-semibold">{{ module.label }}</p>
-                <p class="text-xs text-[#86868B]">{{ module.description }}</p>
-                <Badge class="mt-2" :variant="module.ready ? 'success' : 'secondary'">{{ module.ready ? 'Configured' : 'Pending' }}</Badge>
-              </div>
-            </NuxtLink>
+    <!-- Fleet (superadmin only) -->
+    <div v-if="isSuperAdmin" class="space-y-4">
+      <h3 class="text-sm font-bold uppercase tracking-widest text-[#86868B]">Fleet</h3>
+      <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <Card class="rounded-xl border-[#E5E5E7]">
+          <CardContent class="flex flex-col gap-3">
+            <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-[#F5F5F7] text-[#027BFF]">
+              <HotelIcon class="h-4 w-4" />
+            </div>
+            <div>
+              <p class="text-3xl font-bold tracking-tight text-[#1D1D1F]">{{ hotels.length }}</p>
+              <p class="text-xs font-semibold uppercase tracking-widest text-[#86868B]">Hotels</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card class="rounded-xl border-[#E5E5E7]">
+          <CardContent class="flex flex-col gap-3">
+            <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-[#F5F5F7] text-[#027BFF]">
+              <NetworkIcon class="h-4 w-4" />
+            </div>
+            <div>
+              <p class="text-3xl font-bold tracking-tight text-[#1D1D1F]">{{ orgs.length }}</p>
+              <p class="text-xs font-semibold uppercase tracking-widest text-[#86868B]">Organizations</p>
+            </div>
           </CardContent>
         </Card>
       </div>
-    </div>
-
-    <div>
-      <h3 class="mb-4 text-sm font-bold uppercase tracking-widest text-[#86868B]">PMS Sync Status</h3>
-      <Card>
-        <CardContent class="space-y-0">
-          <div
-            v-for="item in syncRows"
-            :key="`${item.label}:${item.mode}`"
-            class="flex items-center justify-between border-b border-[#F5F5F7] py-4 first:pt-0 last:border-b-0 last:pb-0"
-          >
-            <div>
-              <p class="text-sm font-medium">{{ item.label }}</p>
-              <p class="text-xs text-[#86868B]">{{ item.mode }} mode</p>
-            </div>
-            <Badge :variant="item.status === 'Synced' ? 'success' : 'secondary'">
-              {{ item.status }}
-            </Badge>
-          </div>
-          <div v-if="!syncRows.length" class="py-4 text-sm text-[#86868B]">No PMS applications found.</div>
-        </CardContent>
-      </Card>
-    </div>
-
-    <div class="flex items-center justify-end">
-      <Button variant="secondary" :disabled="isLoading" @click="loadDashboard">
-        <RefreshCwIcon />
-        {{ isLoading ? 'Refreshing...' : 'Refresh Dashboard' }}
-      </Button>
     </div>
   </div>
 </template>

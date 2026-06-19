@@ -1,127 +1,338 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { MapPinnedIcon, ShieldAlertIcon } from '@lucide/vue'
+import { MapPinnedIcon, NetworkIcon, PencilIcon, ShieldAlertIcon, TimerIcon } from '@lucide/vue'
 import { useAdminApi } from '~/composables/useAdminApi'
+import { useAuthz } from '~/composables/useAuthz'
 import { useAuth } from '~/composables/useAuth'
 
+useAuth()
 const adminApi = useAdminApi()
-const auth = useAuth()
-const isSuperAdmin = computed(() => auth.role.value === 'superadmin')
+const { can } = useAuthz()
 
-const hotels = ref<Awaited<ReturnType<typeof adminApi.listSuperadminHotels>>>([])
-const categoryItems = ref<Awaited<ReturnType<typeof adminApi.listCategoryItems>>>([])
+const RESOURCE = 'requestMapping' as const
+
+const items = ref<Awaited<ReturnType<typeof adminApi.listCategoryItems>>>([])
+const categories = ref<Awaited<ReturnType<typeof adminApi.listCategories>>>([])
+const hotelDepts = ref<Awaited<ReturnType<typeof adminApi.listHotelDepartments>>>([])
+const slas = ref<Awaited<ReturnType<typeof adminApi.listSlas>>>([])
+
 const isLoading = ref(false)
+const isSaving = ref(false)
+const errorMessage = ref('')
 
-const mappedCount = computed(() => categoryItems.value.filter((item) => item.requestMapping).length)
-const unmappedCount = computed(() => Math.max(categoryItems.value.length - mappedCount.value, 0))
+const isDialogOpen = ref(false)
+const editingItem = ref<(typeof items.value)[number] | null>(null)
+const formDepartmentId = ref('')
+const formSlaId = ref('')
+const formRemark = ref('')
 
-async function loadData() {
-  if (!isSuperAdmin.value) {
-    return
+const categoryNameById = computed(() => {
+  const map = new Map<string, string>()
+  for (const c of categories.value) map.set(c.id, c.name)
+  return map
+})
+
+// requestMapping.departmentId is a Department.id; resolve the department name via
+// the hotelDepartment whose departmentId matches, using hotelDepartment.department.name.
+const departmentNameById = computed(() => {
+  const map = new Map<string, string>()
+  for (const hd of hotelDepts.value) {
+    if (hd.department?.name) map.set(hd.departmentId, hd.department.name)
   }
+  return map
+})
 
+const slaNameById = computed(() => {
+  const map = new Map<string, string>()
+  for (const s of slas.value) map.set(s.id, s.name)
+  return map
+})
+
+const totalCount = computed(() => items.value.length)
+const mappedCount = computed(() => items.value.filter(i => i.requestMapping).length)
+const unmappedCount = computed(() => totalCount.value - mappedCount.value)
+
+async function load() {
+  if (!can('read', RESOURCE)) return
   isLoading.value = true
+  errorMessage.value = ''
   try {
-    const [hotelRows, itemRows] = await Promise.all([
-      adminApi.listSuperadminHotels(),
+    const [loadedItems, loadedCategories, loadedDepts, loadedSlas] = await Promise.all([
       adminApi.listCategoryItems(),
+      adminApi.listCategories(),
+      adminApi.listHotelDepartments(),
+      adminApi.listSlas(),
     ])
-
-    hotels.value = hotelRows
-    categoryItems.value = itemRows
+    items.value = loadedItems
+    categories.value = loadedCategories
+    hotelDepts.value = loadedDepts
+    slas.value = loadedSlas
+  }
+  catch (e) {
+    errorMessage.value = String((e as Error).message)
   }
   finally {
     isLoading.value = false
   }
 }
 
-onMounted(loadData)
+function startEdit(item: (typeof items.value)[number]) {
+  editingItem.value = item
+  formDepartmentId.value = item.requestMapping?.departmentId ?? ''
+  formSlaId.value = item.requestMapping?.slaId ?? ''
+  formRemark.value = item.requestMapping?.remark ?? ''
+  errorMessage.value = ''
+  isDialogOpen.value = true
+}
+
+async function save() {
+  if (isSaving.value || !editingItem.value) return
+  isSaving.value = true
+  errorMessage.value = ''
+  const item = editingItem.value
+  try {
+    await adminApi.upsertCategoryItem({
+      id: item.id,
+      categoryId: item.categoryId,
+      iconId: item.iconId,
+      name: item.name,
+      itemQuantity: item.itemQuantity,
+      hyperlink: item.hyperlink,
+      isActive: item.isActive,
+      requestMapping: {
+        id: item.requestMapping?.id,
+        departmentId: formDepartmentId.value,
+        slaId: formSlaId.value,
+        remark: formRemark.value,
+      },
+    })
+    await load()
+    isDialogOpen.value = false
+  }
+  catch (e) {
+    errorMessage.value = String((e as Error).message)
+  }
+  finally {
+    isSaving.value = false
+  }
+}
+
+onMounted(load)
 </script>
 
 <template>
-  <div v-if="!isSuperAdmin" class="flex flex-col items-center justify-center py-20 text-center">
+  <div v-if="!can('read', RESOURCE)" class="flex flex-col items-center justify-center py-20 text-center">
     <div class="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-white shadow-sm">
       <ShieldAlertIcon class="text-[#C7C7CC]" />
     </div>
-    <h3 class="mb-2 text-xl font-bold">Superadmin Access Only</h3>
+    <h3 class="mb-2 text-xl font-bold">
+      Access Restricted
+    </h3>
     <p class="max-w-sm text-[#86868B]">
-      Staff routing management is available only to superadmin users.
+      You do not have permission to view staff routing.
     </p>
   </div>
 
   <div v-else class="space-y-8">
-    <div class="flex items-center gap-4">
-      <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-[#F5F5F7]">
-        <MapPinnedIcon />
-      </div>
+    <div class="flex items-start justify-between gap-4">
       <div>
-        <h3 class="text-lg font-bold">Routing Coverage</h3>
-        <p class="text-sm text-[#86868B]">Request mapping status for selected hotel and full fleet context</p>
+        <h3 class="text-sm font-bold uppercase tracking-widest text-[#86868B]">
+          Staff Routing
+        </h3>
+        <p class="mt-1 text-2xl font-bold text-[#1D1D1F]">
+          Request Mapping
+        </p>
       </div>
     </div>
 
+    <Alert v-if="errorMessage" variant="destructive">
+      <AlertTitle>Something went wrong</AlertTitle>
+      <AlertDescription>{{ errorMessage }}</AlertDescription>
+    </Alert>
+
+    <!-- Summary stat cards -->
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-      <Card>
-        <CardHeader class="gap-0 pb-0">
-          <CardDescription class="text-[10px] font-bold uppercase tracking-widest text-[#86868B]">Total Routing Items</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <CardTitle class="text-3xl tracking-tight">{{ categoryItems.length }}</CardTitle>
+      <Card class="rounded-xl">
+        <CardContent class="flex items-center gap-4 py-6">
+          <div class="flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F5F7]">
+            <NetworkIcon class="text-[#027BFF]" />
+          </div>
+          <div>
+            <p class="text-xs font-medium uppercase tracking-wide text-[#86868B]">
+              Total items
+            </p>
+            <p class="text-2xl font-bold text-[#1D1D1F]">
+              {{ totalCount }}
+            </p>
+          </div>
         </CardContent>
       </Card>
-      <Card>
-        <CardHeader class="gap-0 pb-0">
-          <CardDescription class="text-[10px] font-bold uppercase tracking-widest text-[#86868B]">Mapped Items</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <CardTitle class="text-3xl tracking-tight">{{ mappedCount }}</CardTitle>
+
+      <Card class="rounded-xl">
+        <CardContent class="flex items-center gap-4 py-6">
+          <div class="flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F5F7]">
+            <MapPinnedIcon class="text-[#027BFF]" />
+          </div>
+          <div>
+            <p class="text-xs font-medium uppercase tracking-wide text-[#86868B]">
+              Mapped
+            </p>
+            <p class="text-2xl font-bold text-[#1D1D1F]">
+              {{ mappedCount }}
+            </p>
+          </div>
         </CardContent>
       </Card>
-      <Card>
-        <CardHeader class="gap-0 pb-0">
-          <CardDescription class="text-[10px] font-bold uppercase tracking-widest text-[#86868B]">Unmapped Items</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <CardTitle class="text-3xl tracking-tight">{{ unmappedCount }}</CardTitle>
+
+      <Card class="rounded-xl">
+        <CardContent class="flex items-center gap-4 py-6">
+          <div class="flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F5F7]">
+            <ShieldAlertIcon class="text-[#86868B]" />
+          </div>
+          <div>
+            <p class="text-xs font-medium uppercase tracking-wide text-[#86868B]">
+              Unmapped
+            </p>
+            <p class="text-2xl font-bold text-[#1D1D1F]">
+              {{ unmappedCount }}
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>
 
-    <Card>
-      <CardHeader>
-        <CardTitle class="text-base">Current Hotel Routing Matrix</CardTitle>
-        <CardDescription>Items without mapping should be assigned in category item setup.</CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-2">
-        <div
-          v-for="item in categoryItems"
-          :key="item.id"
-          class="flex items-center justify-between rounded-xl border border-[#E5E5E7] bg-white px-4 py-3"
-        >
-          <div>
-            <p class="text-sm font-semibold">{{ item.name }}</p>
-            <p class="text-xs text-[#86868B]">Category #{{ item.categoryId }}</p>
+    <p class="text-xs text-[#86868B]">
+      Unmapped categories notify ALL staff; mapped categories notify only the assigned department (doc §11).
+    </p>
+
+    <p v-if="isLoading" class="text-xs text-[#86868B]">
+      Loading...
+    </p>
+
+    <!-- Category item mappings -->
+    <Card class="rounded-xl">
+      <CardContent class="p-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Item</TableHead>
+              <TableHead>Category</TableHead>
+              <TableHead>Department</TableHead>
+              <TableHead>SLA</TableHead>
+              <TableHead class="text-right">
+                Mapping
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            <TableRow v-for="item in items" :key="item.id">
+              <TableCell class="font-medium text-[#1D1D1F]">
+                {{ item.name }}
+              </TableCell>
+              <TableCell class="text-[#86868B]">
+                {{ categoryNameById.get(item.categoryId) ?? '—' }}
+              </TableCell>
+              <TableCell>
+                <span v-if="item.requestMapping" class="text-[#1D1D1F]">
+                  {{ departmentNameById.get(item.requestMapping.departmentId) ?? 'Unknown department' }}
+                </span>
+                <span v-else class="text-[#86868B]">—</span>
+              </TableCell>
+              <TableCell>
+                <span v-if="item.requestMapping" class="text-[#1D1D1F]">
+                  {{ slaNameById.get(item.requestMapping.slaId) ?? 'Unknown SLA' }}
+                </span>
+                <span v-else class="text-[#86868B]">—</span>
+              </TableCell>
+              <TableCell class="text-right">
+                <div class="flex items-center justify-end gap-3">
+                  <Badge :variant="item.requestMapping ? 'success' : 'secondary'">
+                    {{ item.requestMapping ? 'Mapped' : 'Unmapped' }}
+                  </Badge>
+                  <Button
+                    v-if="can('write', RESOURCE)"
+                    size="sm"
+                    variant="outline"
+                    @click="startEdit(item)"
+                  >
+                    <PencilIcon />
+                    {{ item.requestMapping ? 'Edit mapping' : 'Assign' }}
+                  </Button>
+                </div>
+              </TableCell>
+            </TableRow>
+            <TableRow v-if="!isLoading && items.length === 0">
+              <TableCell colspan="5" class="py-10 text-center text-sm text-[#86868B]">
+                No category items found.
+              </TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+
+    <!-- Mapping dialog -->
+    <Dialog v-model:open="isDialogOpen">
+      <DialogContent class="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>
+            {{ editingItem?.requestMapping ? 'Edit mapping' : 'Assign mapping' }}
+          </DialogTitle>
+          <DialogDescription>
+            Route "{{ editingItem?.name }}" to a department and SLA.
+          </DialogDescription>
+        </DialogHeader>
+
+        <Alert v-if="errorMessage" variant="destructive">
+          <AlertTitle>Save failed</AlertTitle>
+          <AlertDescription>{{ errorMessage }}</AlertDescription>
+        </Alert>
+
+        <div class="space-y-5 py-2">
+          <div class="space-y-2">
+            <Label>Department</Label>
+            <Select v-model="formDepartmentId">
+              <SelectTrigger>
+                <SelectValue placeholder="Select department" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="hd in hotelDepts" :key="hd.id" :value="hd.departmentId">
+                  {{ hd.department?.name }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
-          <Badge :variant="item.requestMapping ? 'success' : 'secondary'">
-            {{ item.requestMapping ? 'Mapped' : 'Unmapped' }}
-          </Badge>
-        </div>
-      </CardContent>
-    </Card>
 
-    <Card>
-      <CardHeader>
-        <CardTitle class="text-base">Fleet Scope</CardTitle>
-        <CardDescription>Hotels currently available for superadmin management</CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-2">
-        <div v-for="hotel in hotels" :key="hotel.id" class="flex items-center justify-between rounded-xl border border-[#E5E5E7] bg-white px-4 py-3">
-          <p class="text-sm font-semibold">{{ hotel.name }}</p>
-          <Badge :variant="hotel.isActive ? 'success' : 'secondary'">{{ hotel.isActive ? 'Active' : 'Inactive' }}</Badge>
-        </div>
-      </CardContent>
-    </Card>
+          <div class="space-y-2">
+            <Label>SLA</Label>
+            <Select v-model="formSlaId">
+              <SelectTrigger>
+                <SelectValue placeholder="Select SLA" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="s in slas" :key="s.id" :value="s.id">
+                  {{ s.name }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
-    <p v-if="isLoading" class="text-xs text-[#86868B]">Loading routing data...</p>
+          <div class="space-y-2">
+            <Label>Remark</Label>
+            <Input v-model="formRemark" placeholder="Optional note for staff" />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" :disabled="isSaving" @click="isDialogOpen = false">
+            Cancel
+          </Button>
+          <Button :disabled="isSaving" @click="save">
+            <TimerIcon v-if="!isSaving" />
+            {{ isSaving ? 'Saving...' : 'Save mapping' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
